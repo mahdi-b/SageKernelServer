@@ -11,12 +11,13 @@ import argparse
 from urllib.parse import urlparse, urlunparse, urljoin
 import re
 from typing import Optional
-
+import pika
 from typing import Dict, Union
 from pydantic import BaseModel
 
 max_number_kernels = 3
 output_checking_interval = 0.1
+rabbit_mq_host = "localhost"
 
 
 app = FastAPI()
@@ -45,7 +46,7 @@ if not re.match(r'^token=\w{4,}$', parsed_url.query):
     raise ValueError("Invalid token")
 
 kernel_websockets: Dict[str, WebSocket] = {}
-current_sessions: Dict[str, set] = {}
+session_to_kernel: Dict[str, str] = {}
 
 
 def get_all_kernel_specs():
@@ -64,6 +65,13 @@ from pydantic import BaseModel
 import time
 import json
 
+def rabbitmq_connect():
+    # Connect to RabbitMQ server
+    connection = pika.BlockingConnection(
+        pika.ConnectionParameters(host=rabbit_mq_host, heartbeat=0))
+    return connection
+
+
 class ExecOutput(BaseModel):
     session_id: str
     start_time: str
@@ -73,9 +81,14 @@ class ExecOutput(BaseModel):
     execution_count: int = 0
     completed: bool = False
 
-outputs: dict[str, ExecOutput] = {}
 
-async def check_messages(kernel_id, websocket):
+outputs: dict[str, ExecOutput] = {}
+rabbitmq_connection = rabbitmq_connect()
+
+async def check_messages(websocket, rabbitmq_connection):
+    channel = rabbitmq_connection.channel()
+    channel.exchange_declare(exchange='jupyter', exchange_type='topic')
+
     while True:
         message = await websocket.recv()
         message_data = json.loads(message)
@@ -85,10 +98,13 @@ async def check_messages(kernel_id, websocket):
             msg_id = message_data["parent_header"]["msg_id"]
             session_id = message_data["parent_header"]["session"]
             start_time = message_data["parent_header"]["date"]
-            if "_" in msg_id:
+            # ignore messages that we didn't send.
+            # e.g., spontaneous messages from the kernel or
+            # sent through other means
+            if msg_id not in outputs:
                 continue
 
-            if msg_id not in outputs:
+            if outputs[msg_id] is None:
                 outputs[msg_id] = ExecOutput(session_id=session_id, start_time=start_time, end_time=None,
                                                      msg_type=None, data='')
 
@@ -97,23 +113,42 @@ async def check_messages(kernel_id, websocket):
                 outputs[msg_id].end_time = time.time()
                 outputs[msg_id].execution_count = message_data["content"]["execution_count"]
 
+
             if "execution_state" in message_data["content"] and \
                     message_data["content"]["execution_state"] == "idle" \
                     and msg_id in outputs:
                 outputs[msg_id].completed = True
+                print("Publishing now...")
+                channel.basic_publish(
+                    exchange='jupyter',
+                    routing_key=session_id,
+                    body=f"Message {msg_id} just completed. {outputs[msg_id].content}"
+                )
 
-            if message_data["msg_type"] in ["stream", "display_data", "execute_result"]:
+            if message_data["msg_type"] in ["stream", "display_data", "execute_result", "error"]:
                 # Extract output and append to existing output
                 output_data = message_data["content"].get("data")
                 if output_data is not None:
-                    for key,val in output_data.items():
+                    for key, val in output_data.items():
                         outputs[msg_id].content[key] = outputs[msg_id].content.get(key, '') + val
                 elif 'text' in message_data["content"]:
                     key = message_data["content"]['name']
                     val = message_data["content"]['text']
                     outputs[msg_id].content[key] = outputs[msg_id].content.get(key, '') + val
+                elif "traceback" in message_data["content"]:
+                    for key in ["traceback", "ename", "evalue"]:
+                        outputs[msg_id].content[key] = message_data["content"][key]
+                print("Publishing now...")
+                channel.basic_publish(
+                    exchange='jupyter',
+                    routing_key=session_id,
+                    body=f"Message {msg_id}  has an ouput. {outputs[msg_id].content}"
+                )
 
-        print(f"outputs: {outputs}")
+
+
+        print(f"*** outputs: {outputs}")
+
     return outputs
 
 
@@ -188,7 +223,7 @@ async def create_kernel(kernel_name: str):
         ws_url = urljoin(ws_base_url, f"/api/kernels/{kernel_id}/channels?session_id={session_id}")
 
         kernel_websockets[kernel_id] = await websockets.connect(ws_url, extra_headers=headers)
-        asyncio.create_task(check_messages(kernel_id, kernel_websockets[kernel_id]))
+        asyncio.create_task(check_messages(kernel_websockets[kernel_id], rabbitmq_connection))
         response_object = response.json()
         response_object.update({"session_id": session_id})
         return response_object
@@ -240,10 +275,8 @@ async def execute_code(kernel_id: str, body: PartialExecBody):
     session_id = body.session
     if session_id is None:
         session_id = str(uuid.uuid4())
-    current_sessions[session_id] = set()
-    # parsed_url = urlparse(base_url)
-    # ws_base_url = parsed_url._replace(scheme="ws")
-    # ws_base_url = urlunparse(ws_base_url)
+    session_to_kernel[session_id] = kernel_id
+
     ws_url = urljoin(ws_base_url, f"/api/kernels/{kernel_id}/channels?session_id={session_id}")
 
     if kernel_websockets[kernel_id] is None or kernel_websockets[kernel_id].closed:
@@ -281,6 +314,7 @@ async def execute_code(kernel_id: str, body: PartialExecBody):
         "channel": "shell"
     }
     await kernel_websockets[kernel_id].send(json.dumps(message))
+    outputs[msg_id] = None
     return {"msg_id": msg_id}
 
 @app.post("/stop/{kernel_id}")
@@ -292,6 +326,14 @@ async def stop_kernel(kernel_id: str):
     await ws.close()
     del kernel_websockets[kernel_id]
 
+@app.get("/status/{msg_id}")
+async def execute_code(msg_id: str):
+    # Getting message from users.
+    if msg_id not in outputs:
+        raise HTTPException(status_code=400, detail="Invalid msg_id")
+    else:
+        print(outputs[msg_id].json())
+    return outputs[msg_id].dict()
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -304,5 +346,9 @@ async def shutdown_event():
             print(f"Error closing websocket for kernel {kernel_id}")
 
 
+
+
+
 if __name__ == "__main__":
+
     uvicorn.run('main:app', host="0.0.0.0", port=8000, reload=True)

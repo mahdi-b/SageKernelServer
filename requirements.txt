@@ -3,3 +3,4 @@ websockets
 jupyter_client
 uvicorn
 requests
+pika
