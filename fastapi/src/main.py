@@ -14,10 +14,19 @@ from typing import Optional
 import pika
 from typing import Dict, Union
 from pydantic import BaseModel
+import os
+
+env = os.getenv("ENVIROMENT")
+
+if env is None or env == "local":
+    rabbit_mq_host = "amqp://localhost:5672/?heartbeat=0"
+else:
+    rabbit_mq_host = "amqp://guest:guest@host.docker.internal:5672/?heartbeat=0"
+
 
 max_number_kernels = 3
 output_checking_interval = 0.1
-rabbit_mq_host = "localhost"
+
 
 
 app = FastAPI()
@@ -65,10 +74,19 @@ from pydantic import BaseModel
 import time
 import json
 
+# def rabbitmq_connect():
+#     # Connect to RabbitMQ server
+#     connection = pika.BlockingConnection(
+#         pika.ConnectionParameters(host=rabbit_mq_host, heartbeat=0))
+#     return connection
+
+
+
 def rabbitmq_connect():
     # Connect to RabbitMQ server
     connection = pika.BlockingConnection(
-        pika.ConnectionParameters(host=rabbit_mq_host, heartbeat=0))
+        pika.URLParameters(rabbit_mq_host)
+    )
     return connection
 
 
