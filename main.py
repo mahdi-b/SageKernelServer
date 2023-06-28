@@ -118,12 +118,14 @@ async def check_messages(websocket, rabbitmq_connection):
                     message_data["content"]["execution_state"] == "idle" \
                     and msg_id in outputs:
                 outputs[msg_id].completed = True
-                print("Publishing now...")
-                channel.basic_publish(
-                    exchange='jupyter',
-                    routing_key=session_id,
-                    body=f"Message {msg_id} just completed. {outputs[msg_id].content}"
-                )
+                # if content is emtpy that means nothing got published
+                # so go ahead and publish to the wall
+                if outputs[msg_id].content == {}:
+                    channel.basic_publish(
+                        exchange='jupyter',
+                        routing_key=session_id,
+                        body=f"Message {msg_id} just completed. {outputs[msg_id].content}"
+                    )
 
             if message_data["msg_type"] in ["stream", "display_data", "execute_result", "error"]:
                 # Extract output and append to existing output
