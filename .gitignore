@@ -1,4 +1,8 @@
 *~
+.idea/*
 fastapi/id_rsa_github
 *pyc
 src/__pycache__/*
+
+
+

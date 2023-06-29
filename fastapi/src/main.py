@@ -16,13 +16,8 @@ from typing import Dict, Union
 from pydantic import BaseModel
 import os
 
-env = os.getenv("ENVIROMENT")
-rabbitmq_host = os.getenv("RABBITMQ_HOST")
 
-if env is None or env == "local":
-    rabbit_mq_host = "amqp://localhost:5672/?heartbeat=0"
-else:
-    rabbit_mq_host = f"amqp://guest:guest@rabbitmq_server:5672/?heartbeat=0"
+rabbit_mq_host = f"amqp://guest:guest@rabbitmq_server:5672/?heartbeat=0"
 
 
 max_number_kernels = 3
