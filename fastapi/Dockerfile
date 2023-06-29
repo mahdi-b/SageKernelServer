@@ -7,20 +7,20 @@ WORKDIR /app
 # Add the current directory contents into the container at /app
 ADD . /app
 
-# Install any needed packages specified in requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
-
 # Make port 80 available to the world outside this container
 EXPOSE 80
-
 
 COPY id_rsa_github /root/.ssh/id_rsa
 RUN chmod 600 /root/.ssh/id_rsa
 RUN mkdir -p -m 0600 ~/.ssh && echo "StrictHostKeyChecking no" >> ~/.ssh/config
 
 RUN git clone git@github.com:mahdi-b/SageKernelServer.git
+WORKDIR /app/SageKernelServer/fastapi
+RUN pip install --no-cache-dir -r requirements.txt
 
-EXPOSE 80
+# Copy the start.sh script to the container and make it executable
+COPY start.sh /app/SageKernelServer/
+RUN chmod +x /app/SageKernelServer/start.sh
 
-# Run app.py when the container launches
-CMD ["python", "/app/SageKernelServer/src/main.py", "--host", "0.0.0.0", "--port", "80", "--url", "http://127.0.0.1:8888/?token=123456789"]
+# Use start.sh as the entry point
+ENTRYPOINT ["/app/SageKernelServer/start.sh"]

@@ -17,11 +17,12 @@ from pydantic import BaseModel
 import os
 
 env = os.getenv("ENVIROMENT")
+rabbitmq_host = os.getenv("RABBITMQ_HOST")
 
 if env is None or env == "local":
     rabbit_mq_host = "amqp://localhost:5672/?heartbeat=0"
 else:
-    rabbit_mq_host = "amqp://guest:guest@host.docker.internal:5672/?heartbeat=0"
+    rabbit_mq_host = f"amqp://guest:guest@rabbitmq_server:5672/?heartbeat=0"
 
 
 max_number_kernels = 3
@@ -84,6 +85,8 @@ import json
 
 def rabbitmq_connect():
     # Connect to RabbitMQ server
+    print(f"The server is {rabbit_mq_host}")
+
     connection = pika.BlockingConnection(
         pika.URLParameters(rabbit_mq_host)
     )
@@ -122,7 +125,7 @@ async def check_messages(websocket, rabbitmq_connection):
             if msg_id not in outputs:
                 continue
 
-            if outputs[msg_id] is None:
+            if outputs[msg_id] == {}:
                 outputs[msg_id] = ExecOutput(session_id=session_id, start_time=start_time, end_time=None,
                                                      msg_type=None, data='')
 
@@ -334,7 +337,7 @@ async def execute_code(kernel_id: str, body: PartialExecBody):
         "channel": "shell"
     }
     await kernel_websockets[kernel_id].send(json.dumps(message))
-    outputs[msg_id] = None
+    outputs[msg_id] = {}
     return {"msg_id": msg_id}
 
 @app.post("/stop/{kernel_id}")
@@ -347,12 +350,16 @@ async def stop_kernel(kernel_id: str):
     del kernel_websockets[kernel_id]
 
 @app.get("/status/{msg_id}")
-async def execute_code(msg_id: str):
+async def check_status(msg_id: str):
     # Getting message from users.
     if msg_id not in outputs:
         raise HTTPException(status_code=400, detail="Invalid msg_id")
     else:
-        print(outputs[msg_id].json())
+        if outputs[msg_id] is not None:
+            print(outputs[msg_id].json())
+
+        else:
+            print(f"No output yet for {msg_id}")
     return outputs[msg_id].dict()
 
 @app.on_event("shutdown")
