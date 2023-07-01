@@ -1,0 +1,30 @@
+version: '3.8'
+services:
+  rabbitmq_server:
+    image: rabbitmq:3.12-management
+    container_name: rabbitmq_server
+    networks:
+      - sagekernelproxynetwork
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+
+  jupyter_server:
+    build: ./jupyter
+    container_name: jupyter_server
+    networks:
+      - sagekernelproxynetwork
+    ports:
+      - "8888:8888"
+
+  sage_fastapi:
+    build: ./fastapi
+    container_name: sage_fastapi
+    networks:
+      - sagekernelproxynetwork
+    ports:
+      - "80:8000"
+
+networks:
+  sagekernelproxynetwork:
+    name: sagekernelproxynetwork
