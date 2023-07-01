@@ -11,4 +11,4 @@ ADD . /app
 ENV JUPYTER_TOKEN=123456
 
 # Start Jupyter Notebook
-CMD ["start-notebook.sh", "--NotebookApp.token=123456", "--no-browser"]
+CMD ["start-notebook.sh", "--NotebookApp.token=123456", "--no-browser", "--ServerApp.ip=0.0.0.0"]
