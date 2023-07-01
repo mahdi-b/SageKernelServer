@@ -24,6 +24,9 @@ services:
       - sagekernelproxynetwork
     ports:
       - "80:8000"
+    depends_on: 
+      - rabbitmq_server
+      - jupyter_server
 
 networks:
   sagekernelproxynetwork:
