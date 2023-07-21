@@ -20,7 +20,7 @@ import os
 from sse_starlette.sse import EventSourceResponse
 
 
-rabbit_mq_host = f"amqp://guest:guest@127.0.0.1:5672/?heartbeat=0"
+rabbit_mq_host = f"amqp://guest:guest@rabbitmq_server:5672/?heartbeat=0"
 
 
 max_number_kernels = 3
@@ -100,6 +100,7 @@ class ExecOutput(BaseModel):
     end_time: Optional[str]
     msg_type: Optional[str]
     content: List[Dict[str, str]] = []
+    last_update_time: Optional[str] = None
     execution_count: int = 0
     completed: bool = False
 
@@ -159,8 +160,11 @@ async def check_messages(websocket, rabbitmq_connection):
                 # Extract output and append to existing output
                 output_data = message_data["content"].get("data")
                 if output_data is not None:
+                    temp_output = {}
                     for key, val in output_data.items():
-                        outputs[msg_id].content.append({key: val})
+                        temp_output[key] = val
+                    outputs[msg_id].content.append(temp_output)
+
                 elif 'text' in message_data["content"]:
                     key = message_data["content"]['name']
                     val = message_data["content"]['text']
@@ -177,6 +181,7 @@ async def check_messages(websocket, rabbitmq_connection):
                 elif "traceback" in message_data["content"]:
                     for key in ["traceback", "ename", "evalue"]:
                         outputs[msg_id].content.append({key:message_data["content"][key]})
+                outputs[msg_id].last_update_time = message_data['header']['date']
                 # print("Publishing now...")
                 channel.basic_publish(
                     exchange='jupyter',
@@ -184,9 +189,6 @@ async def check_messages(websocket, rabbitmq_connection):
                     body=f"Message {msg_id}  has an ouput. {outputs[msg_id].content}"
                 )
 
-
-
-        print(f"*** outputs: {outputs}")
 
     return outputs
 
@@ -379,32 +381,45 @@ async def check_status(msg_id: str):
     return outputs[msg_id].dict()
 
 @app.get("/status/{msg_id}/stream")
-async def check_status_stream(request: Request):
+async def check_status_stream(request: Request, msg_id: str):
     def new_messages():
         # Add logic here to check for new messages
         yield 'Hello World'
     async def event_generator():
-        i=0
+        last_msg_update = None
+
+        if msg_id not in outputs:
+            print("msg_id not found in outputs")
+            raise HTTPException(status_code=500, detail=f"{msg_id} not found in outputs")
+
+
+
         while True:
             # If client closes connection, stop sending events
             if await request.is_disconnected():
+                print("request disconnected")
                 break
-
             # Checks for new messages and return them to client if any
-            if new_messages():
+            if last_msg_update is None or last_msg_update != outputs[msg_id].last_update_time:
                 yield {
                         "event": "new_message",
                         "id": "message_id",
                         "retry": RETRY_TIMEOUT,
-                        "data": f"{i}"
+                        "data": outputs[msg_id].dict()
                 }
-                i+=1
-            if i>=5:
+
+            last_msg_update = outputs[msg_id].last_update_time
+
+            if outputs[msg_id].completed is True:
+                if last_msg_update != outputs[msg_id].last_update_time:
+                    yield {
+                        "event": "new_message",
+                        "id": "message_id",
+                        "retry": RETRY_TIMEOUT,
+                        "data": outputs[msg_id].dict()
+                    }
                 break
-
             await asyncio.sleep(STREAM_DELAY)
-
-
     return EventSourceResponse(event_generator())
 
 @app.on_event("shutdown")
