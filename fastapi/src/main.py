@@ -1,33 +1,37 @@
 import uuid
 import time
+from dotenv import load_dotenv
 import asyncio
 from jupyter_client.kernelspec import KernelSpecManager
 import uvicorn
 import websockets
-from fastapi import FastAPI, WebSocket, HTTPException
+from fastapi import FastAPI, WebSocket, HTTPException, Request
 import requests
 import json
 import argparse
 from urllib.parse import urlparse, urlunparse, urljoin
 import re
-from typing import Optional
+from typing import Optional, List
 import pika
 from typing import Dict, Union
 from pydantic import BaseModel
 import os
 
+from sse_starlette.sse import EventSourceResponse
 
-rabbit_mq_host = f"amqp://guest:guest@rabbitmq_server:5672/?heartbeat=0"
+
+rabbit_mq_host = f"amqp://guest:guest@127.0.0.1:5672/?heartbeat=0"
 
 
 max_number_kernels = 3
 output_checking_interval = 0.1
 
-
+STREAM_DELAY = 1  # second
+RETRY_TIMEOUT = 15000  # milisecond
 
 app = FastAPI()
 
-parser = argparse.ArgumentParser(description='Your Flask app')
+parser = argparse.ArgumentParser(description='SageKernelServer')
 parser.add_argument('--url', type=str, help='URL to be used in routes')
 args = parser.parse_args()
 
@@ -43,6 +47,9 @@ if not all([parsed_url.scheme, parsed_url.netloc, parsed_url.query]):
     raise ValueError("Invalid URL")
 
 base_url = urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path, '', '', ''))
+# TODO: do this if we're using the RabbitMQ server for communication
+# ws_base_url = None
+# if os.getenv("messaging_type") == "rabbitmq":
 ws_base_url = parsed_url._replace(scheme="ws")
 ws_base_url = urlunparse(ws_base_url)
 
@@ -65,10 +72,9 @@ class PartialExecBody(BaseModel):
     session: Union[str, None] = None
     code: str
 
-
-from pydantic import BaseModel
-import time
-import json
+# from pydantic import BaseModel
+# import time
+# import json
 
 # def rabbitmq_connect():
 #     # Connect to RabbitMQ server
@@ -93,7 +99,7 @@ class ExecOutput(BaseModel):
     start_time: str
     end_time: Optional[str]
     msg_type: Optional[str]
-    content: str = {}
+    content: List[Dict[str, str]] = []
     execution_count: int = 0
     completed: bool = False
 
@@ -114,6 +120,7 @@ async def check_messages(websocket, rabbitmq_connection):
             msg_id = message_data["parent_header"]["msg_id"]
             session_id = message_data["parent_header"]["session"]
             start_time = message_data["parent_header"]["date"]
+
             # ignore messages that we didn't send.
             # e.g., spontaneous messages from the kernel or
             # sent through other means
@@ -134,29 +141,43 @@ async def check_messages(websocket, rabbitmq_connection):
                     message_data["content"]["execution_state"] == "idle" \
                     and msg_id in outputs:
                 outputs[msg_id].completed = True
+
                 # if content is emtpy that means nothing got published
                 # so go ahead and publish to the wall
-                if outputs[msg_id].content == {}:
+                if outputs[msg_id].content == []:
                     channel.basic_publish(
                         exchange='jupyter',
                         routing_key=session_id,
                         body=f"Message {msg_id} just completed. {outputs[msg_id].content}"
                     )
 
+
+
             if message_data["msg_type"] in ["stream", "display_data", "execute_result", "error"]:
+                ### if stream, then append to existing output if exists
+                print("message data is ", message_data)
                 # Extract output and append to existing output
                 output_data = message_data["content"].get("data")
                 if output_data is not None:
                     for key, val in output_data.items():
-                        outputs[msg_id].content[key] = outputs[msg_id].content.get(key, '') + val
+                        outputs[msg_id].content.append({key: val})
                 elif 'text' in message_data["content"]:
                     key = message_data["content"]['name']
                     val = message_data["content"]['text']
-                    outputs[msg_id].content[key] = outputs[msg_id].content.get(key, '') + val
+
+                    # outputs[msg_id].content.append({key:outputs[msg_id].content.get(key, '') + val})
+                    if len(outputs[msg_id].content) > 0 and message_data["msg_type"] == "stream":
+                        prev_val = outputs[msg_id].content[-1].get(key)
+                        if prev_val is not None:
+                            outputs[msg_id].content[-1][key] = prev_val + val
+                        else:
+                            outputs[msg_id].content.append({key: val})
+                    else:
+                        outputs[msg_id].content.append({key: val})
                 elif "traceback" in message_data["content"]:
                     for key in ["traceback", "ename", "evalue"]:
-                        outputs[msg_id].content[key] = message_data["content"][key]
-                print("Publishing now...")
+                        outputs[msg_id].content.append({key:message_data["content"][key]})
+                # print("Publishing now...")
                 channel.basic_publish(
                     exchange='jupyter',
                     routing_key=session_id,
@@ -179,18 +200,18 @@ def get_kernels():
     response = session.get(base_url)
     xsrf_token = response.cookies.get('_xsrf')
 
+    print(f"url is {url} and token to use is {token}")
+
     headers = {
         'Authorization': f'token {token}',
         "X-XSRFToken": xsrf_token,
         "Referer": base_url
     }
-    response = requests.post(url, headers=headers, json={})
-    if response.status_code != 201:
-        print (response.status_code)
-        raise HTTPException(status_code=500, detail=f"Failed to get kernels {response.text}")
-    elif response.status_code == 201:
+    response = requests.get(url, headers=headers, json={})
+    if response.status_code == 201 or response.status_code == 200:
         return response.json()
     else:
+        print (response.status_code)
         raise HTTPException(status_code=500, detail=f"Failed to get kernels {response.text}")
 
 
@@ -356,6 +377,35 @@ async def check_status(msg_id: str):
         else:
             print(f"No output yet for {msg_id}")
     return outputs[msg_id].dict()
+
+@app.get("/status/{msg_id}/stream")
+async def check_status_stream(request: Request):
+    def new_messages():
+        # Add logic here to check for new messages
+        yield 'Hello World'
+    async def event_generator():
+        i=0
+        while True:
+            # If client closes connection, stop sending events
+            if await request.is_disconnected():
+                break
+
+            # Checks for new messages and return them to client if any
+            if new_messages():
+                yield {
+                        "event": "new_message",
+                        "id": "message_id",
+                        "retry": RETRY_TIMEOUT,
+                        "data": f"{i}"
+                }
+                i+=1
+            if i>=5:
+                break
+
+            await asyncio.sleep(STREAM_DELAY)
+
+
+    return EventSourceResponse(event_generator())
 
 @app.on_event("shutdown")
 async def shutdown_event():

@@ -9,11 +9,14 @@ ADD . /app
 
 EXPOSE 80
 
-COPY id_rsa_github /root/.ssh/id_rsa
-RUN chmod 600 /root/.ssh/id_rsa
-RUN mkdir -p -m 0600 ~/.ssh && echo "StrictHostKeyChecking no" >> ~/.ssh/config
 
-RUN git clone git@github.com:mahdi-b/SageKernelServer.git
+# COPY id_rsa_github /root/.ssh/id_rsa
+# RUN chmod 600 /root/.ssh/id_rsa
+# RUN mkdir -p -m 0600 ~/.ssh && echo "StrictHostKeyChecking no" >> ~/.ssh/config
+# RUN git clone git@github.com:mahdi-b/SageKernelServer.git
+
+COPY . /app/SageKernelServer/fastapi
+
 WORKDIR /app/SageKernelServer/fastapi
 RUN pip install --no-cache-dir -r requirements.txt
 
