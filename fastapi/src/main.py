@@ -22,11 +22,10 @@ from sse_starlette.sse import EventSourceResponse
 
 rabbit_mq_host = f"amqp://guest:guest@rabbitmq_server:5672/?heartbeat=0"
 
-
 max_number_kernels = 3
 output_checking_interval = 0.1
 
-STREAM_DELAY = 1  # second
+STREAM_DELAY = 0.1  # second
 RETRY_TIMEOUT = 15000  # milisecond
 
 app = FastAPI()
@@ -103,6 +102,7 @@ class ExecOutput(BaseModel):
     last_update_time: Optional[str] = None
     execution_count: int = 0
     completed: bool = False
+
 
 
 outputs: dict[str, ExecOutput] = {}
@@ -402,9 +402,6 @@ async def check_status_stream(request: Request, msg_id: str):
             # Checks for new messages and return them to client if any
             if last_msg_update is None or last_msg_update != outputs[msg_id].last_update_time:
                 yield {
-                        "event": "new_message",
-                        "id": "message_id",
-                        "retry": RETRY_TIMEOUT,
                         "data": outputs[msg_id].dict()
                 }
 
@@ -432,10 +429,5 @@ async def shutdown_event():
         except Exception as e:
             print(f"Error closing websocket for kernel {kernel_id}")
 
-
-
-
-
 if __name__ == "__main__":
-
     uvicorn.run('main:app', host="0.0.0.0", port=8000, reload=True)
