@@ -1,5 +1,6 @@
 import uuid
 import time
+from datetime import datetime
 from dotenv import load_dotenv
 import asyncio
 from jupyter_client.kernelspec import KernelSpecManager
@@ -14,10 +15,11 @@ import re
 from typing import Optional, List
 import pika
 from typing import Dict, Union
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import os
 
 from sse_starlette.sse import EventSourceResponse
+from fastapi.middleware.cors import CORSMiddleware
 
 
 rabbit_mq_host = f"amqp://guest:guest@rabbitmq_server:5672/?heartbeat=0"
@@ -25,10 +27,22 @@ rabbit_mq_host = f"amqp://guest:guest@rabbitmq_server:5672/?heartbeat=0"
 max_number_kernels = 3
 output_checking_interval = 0.1
 
-STREAM_DELAY = 0.1  # second
+STREAM_DELAY = 0.01  # second
 RETRY_TIMEOUT = 15000  # milisecond
 
 app = FastAPI()
+# origins = [
+#     "*",
+# ]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allows all origins
+    allow_credentials=True, # Allows cookies/authorization headers
+    allow_methods=["*"],  # Allows all methods
+    allow_headers=["*"],  # Allows all headers
+)
+
+
 
 parser = argparse.ArgumentParser(description='SageKernelServer')
 parser.add_argument('--url', type=str, help='URL to be used in routes')
@@ -37,7 +51,6 @@ args = parser.parse_args()
 # Set the URL
 
 full_url = args.url
-
 
 
 # Validate the URL and the token
@@ -84,13 +97,23 @@ class PartialExecBody(BaseModel):
 
 
 def rabbitmq_connect():
-    # Connect to RabbitMQ server
-    print(f"The server is {rabbit_mq_host}")
-
-    connection = pika.BlockingConnection(
-        pika.URLParameters(rabbit_mq_host)
-    )
-    return connection
+    attempts = 2
+    for i in range(attempts):
+        try:
+            connection = pika.BlockingConnection(
+                pika.ConnectionParameters(
+                    host='rabbitmq_server',
+                    heartbeat=0,
+                    blocked_connection_timeout=60,
+                )
+            )
+            return connection
+        except pika.exceptions.AMQPConnectionError:
+            if i < attempts - 1:  # i is zero indexed
+                time.sleep(10)  # wait for 10 seconds before trying to reconnect
+                continue
+            else:
+                raise
 
 
 class ExecOutput(BaseModel):
@@ -103,9 +126,17 @@ class ExecOutput(BaseModel):
     execution_count: int = 0
     completed: bool = False
 
-
+class KernelInfo(BaseModel):
+    kernel_id: str
+    room: str
+    board: str
+    name: str
+    alias: str
+    is_private: bool
+    owner: str
 
 outputs: dict[str, ExecOutput] = {}
+kernel_info_collection: dict[str, KernelInfo] = {}
 rabbitmq_connection = rabbitmq_connect()
 
 async def check_messages(websocket, rabbitmq_connection):
@@ -133,8 +164,8 @@ async def check_messages(websocket, rabbitmq_connection):
                                                      msg_type=None, data='')
 
             if message_data["channel"] == "shell":
-                outputs[msg_id].msg_type = message_data['metadata']['status']
-                outputs[msg_id].end_time = time.time()
+                current_date = datetime.now()
+                outputs[msg_id].end_time = current_date.isoformat() + 'Z'
                 outputs[msg_id].execution_count = message_data["content"]["execution_count"]
 
 
@@ -152,9 +183,8 @@ async def check_messages(websocket, rabbitmq_connection):
                         body=f"Message {msg_id} just completed. {outputs[msg_id].content}"
                     )
 
-
-
             if message_data["msg_type"] in ["stream", "display_data", "execute_result", "error"]:
+                outputs[msg_id].msg_type = message_data['msg_type']
                 ### if stream, then append to existing output if exists
                 print("message data is ", message_data)
                 # Extract output and append to existing output
@@ -182,6 +212,7 @@ async def check_messages(websocket, rabbitmq_connection):
                     for key in ["traceback", "ename", "evalue"]:
                         outputs[msg_id].content.append({key:message_data["content"][key]})
                 outputs[msg_id].last_update_time = message_data['header']['date']
+
                 # print("Publishing now...")
                 channel.basic_publish(
                     exchange='jupyter',
@@ -192,8 +223,12 @@ async def check_messages(websocket, rabbitmq_connection):
 
     return outputs
 
+@app.get("/collection")
+async def get_kernel_info_collection():
+    kernel_info_array = [kernel.dict() for kernel in kernel_info_collection.values()]
+    return kernel_info_array
 
-@app.get("/kernel")
+@app.get("/kernels")
 def get_kernels():
     # list the kernels created by the user
     url = urljoin(base_url, "/api/kernels")
@@ -209,7 +244,6 @@ def get_kernels():
         "X-XSRFToken": xsrf_token,
         "Referer": base_url
     }
-    response = requests.get(url, headers=headers, json={})
     if response.status_code == 201 or response.status_code == 200:
         return response.json()
     else:
@@ -217,8 +251,33 @@ def get_kernels():
         raise HTTPException(status_code=500, detail=f"Failed to get kernels {response.text}")
 
 
-@app.post("/kernel/{kernel_name}")
-async def create_kernel(kernel_name: str):
+@app.get("/kernelspecs")
+async def get_kernelspecs():
+    # Get the XSRF token
+    session = requests.Session()
+    response = session.get(base_url)
+    xsrf_token = response.cookies.get('_xsrf')
+
+    headers = {
+        'Authorization': f'token {token}',
+        "X-XSRFToken": xsrf_token,
+        "Referer": base_url
+    }
+
+    kernel_specs_url = urljoin(base_url, "/api/kernelspecs")
+    response = requests.get(kernel_specs_url, headers=headers)
+    if response.status_code != 201:
+        return response.json()['kernelspecs']
+    else:
+        raise HTTPException(status_code=500, detail=f"Failed to get kernelspecs {response.text}")
+
+@app.get("/heartbeat")
+async def heartbeat():
+    return {"status": "ok"}
+
+
+@app.post("/kernels/{kernel_name}")
+async def create_kernel(kernel_name: str, kernel_info: KernelInfo):
     if len(kernel_websockets) == max_number_kernels:
         print("1")
         raise HTTPException(status_code=400,
@@ -257,9 +316,15 @@ async def create_kernel(kernel_name: str):
     elif response.status_code == 201:
         print(f'Successfully created kernel {kernel_name}')
         kernel_id = response.json()['id']
+
+        # set the kernel_id field of the kernel_info object with the kernel_id
+        kernel_info.kernel_id = kernel_id
+
+        # add the enhanced kernel_info object to the kernel_info_collection dictionary
+        kernel_info_collection[kernel_id] = kernel_info
+
         kernel_websockets[kernel_id] = None
         print(kernel_websockets)
-        # headers = {'Authorization': f'token {token}'}
         session_id = str(uuid.uuid4())
         ws_url = urljoin(ws_base_url, f"/api/kernels/{kernel_id}/channels?session_id={session_id}")
 
@@ -271,7 +336,7 @@ async def create_kernel(kernel_name: str):
     else:
         raise HTTPException(status_code=500, detail=f"Failed to create kernel {response.text}")
 
-@app.delete("/kernel/{kernel_id}")
+@app.delete("/kernels/{kernel_id}")
 async def delete_kernel(kernel_id: str):
     # Get the XSRF token
     session = requests.Session()
@@ -294,12 +359,12 @@ async def delete_kernel(kernel_id: str):
         print(f'Successfully deleted kernel {kernel_id}')
         try:
             del kernel_websockets[kernel_id]
+            del kernel_info_collection[kernel_id]
         except KeyError:
             print(f"{kernel_id} not found in kernel_websockets.")
         return {"kernel_id": kernel_id, "status": "deleted"}
     else:
         raise HTTPException(status_code=500, detail=f"Failed to delete kernel {response.text}")
-
 
 
 @app.post("/execute/{kernel_id}")
@@ -367,6 +432,29 @@ async def stop_kernel(kernel_id: str):
     await ws.close()
     del kernel_websockets[kernel_id]
 
+# Restart kernel
+@app.post("/restart/{kernel_id}")
+async def restart_kernel(kernel_id: str):
+    if kernel_id not in kernel_info_collection:
+        raise HTTPException(status_code=400, detail="Kernel not started")
+    url = urljoin(base_url, f"/api/kernels/{kernel_id}/restart")
+    # Get the XSRF token
+    session = requests.Session()
+    response = session.get(base_url)
+    xsrf_token = response.cookies.get('_xsrf')
+    headers = {
+        'Authorization': f'token {token}',
+        "X-XSRFToken": xsrf_token,
+        "Referer": base_url
+    }
+    response = requests.post(url, headers=headers)
+    if response.status_code == 200:
+        print(f"Successfully restarted kernel {kernel_id}")
+        return {"status": "ok"}
+    else:
+        raise HTTPException(status_code=500, detail=f"Failed to restart kernel {response.text}")
+
+
 @app.get("/status/{msg_id}")
 async def check_status(msg_id: str):
     # Getting message from users.
@@ -374,50 +462,78 @@ async def check_status(msg_id: str):
         raise HTTPException(status_code=400, detail="Invalid msg_id")
     else:
         if outputs[msg_id] is not None:
-            print(outputs[msg_id].json())
-
+            # print(f"Output for {msg_id} is {outputs[msg_id]}")
+            print(f"{msg_id} has output and is of type {type(outputs[msg_id])}")
         else:
             print(f"No output yet for {msg_id}")
-    return outputs[msg_id].dict()
+    return outputs[msg_id]
 
 @app.get("/status/{msg_id}/stream")
 async def check_status_stream(request: Request, msg_id: str):
-    def new_messages():
-        # Add logic here to check for new messages
-        yield 'Hello World'
+    headers = {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'Access-Control-Allow-Origin': '*'
+    }
+
     async def event_generator():
         last_msg_update = None
 
         if msg_id not in outputs:
             print("msg_id not found in outputs")
             raise HTTPException(status_code=500, detail=f"{msg_id} not found in outputs")
-
-
+            # TODO: should we return an empty object here? or return 404?
 
         while True:
-            # If client closes connection, stop sending events
+
+            # if the object is empty then print the message to the stdout and skip it
+
             if await request.is_disconnected():
                 print("request disconnected")
                 break
+
             # Checks for new messages and return them to client if any
             if last_msg_update is None or last_msg_update != outputs[msg_id].last_update_time:
-                yield {
-                        "data": outputs[msg_id].dict()
-                }
-
-            last_msg_update = outputs[msg_id].last_update_time
-
-            if outputs[msg_id].completed is True:
-                if last_msg_update != outputs[msg_id].last_update_time:
-                    yield {
+                # if not isinstance(outputs[msg_id], ExecOutput):
+                if outputs[msg_id] == {}:
+                    message = {
                         "event": "new_message",
                         "id": "message_id",
-                        "retry": RETRY_TIMEOUT,
-                        "data": outputs[msg_id].dict()
+                        "data": ""
+
                     }
+                    yield json.dumps(message)
+                else:
+                    data = outputs[msg_id].json()  # should return a JSON string
+                    message = {
+                        "event": "new_message",
+                        "id": "message_id",
+                        "data": data
+
+                    }
+                    yield message
+
+                    last_msg_update = outputs[msg_id].last_update_time
+
+            if outputs[msg_id] != {} and outputs[msg_id].completed is True:
+                if last_msg_update != outputs[msg_id].last_update_time:
+                    data = outputs[msg_id].json()
+                    message = {
+                        "event": "new_message",
+                        "id": "message_id",
+                        "data": data,
+                        "retry": RETRY_TIMEOUT
+
+                    }
+                    yield message
+
                 break
+
             await asyncio.sleep(STREAM_DELAY)
-    return EventSourceResponse(event_generator())
+
+    return EventSourceResponse(event_generator(), headers=headers)
+
 
 @app.on_event("shutdown")
 async def shutdown_event():

@@ -6,8 +6,8 @@ services:
     networks:
       - sagekernelproxynetwork
     ports:
-      - "5672:5672"
-      - "15672:15672"
+      - '5672:5672'
+      - '15672:15672'
     healthcheck:
       test: rabbitmq-diagnostics -q ping
       interval: 10s
@@ -20,12 +20,12 @@ services:
     networks:
       - sagekernelproxynetwork
     ports:
-      - "8888:8888"
-    healthcheck:
-      test: ["CMD", "wget", "http://127.0.0.1:8888"]
-      interval: 10s
-      timeout: 10s
-      retries: 3
+      - '8888:8888'
+    # healthcheck:
+    #   test: ["CMD", "wget", "http://127.0.0.1:8888"]
+    #   interval: 10s
+    #   timeout: 10s
+    #   retries: 3
 
   sage_fastapi:
     build: ./fastapi
@@ -33,13 +33,15 @@ services:
     networks:
       - sagekernelproxynetwork
     ports:
-      - "80:8000"
+      - '81:8000'
     depends_on:
       rabbitmq_server:
         condition: service_healthy
-      jupyter_server:
-        condition: service_healthy
+      # jupyter_server:
+      #   condition: service_healthy
 
 networks:
   sagekernelproxynetwork:
     name: sagekernelproxynetwork
+volumes:
+  sage_kernel_server:

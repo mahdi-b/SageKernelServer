@@ -4,3 +4,4 @@ fastapi/id_rsa_github
 *pyc
 src/__pycache__/*
 .DS_Store
+.env
