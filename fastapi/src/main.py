@@ -22,7 +22,8 @@ from sse_starlette.sse import EventSourceResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 
-rabbit_mq_host = f"amqp://guest:guest@rabbitmq_server:5672/?heartbeat=0"
+# rabbit_mq_host = f"amqp://guest:guest@0.0.0.0:5672/?heartbeat=0"
+# rabbit_mq_host = "127.0.0.1"
 
 max_number_kernels = 3
 output_checking_interval = 0.1
@@ -96,24 +97,24 @@ class PartialExecBody(BaseModel):
 
 
 
-def rabbitmq_connect():
-    attempts = 2
-    for i in range(attempts):
-        try:
-            connection = pika.BlockingConnection(
-                pika.ConnectionParameters(
-                    host='rabbitmq_server',
-                    heartbeat=0,
-                    blocked_connection_timeout=60,
-                )
-            )
-            return connection
-        except pika.exceptions.AMQPConnectionError:
-            if i < attempts - 1:  # i is zero indexed
-                time.sleep(10)  # wait for 10 seconds before trying to reconnect
-                continue
-            else:
-                raise
+# def rabbitmq_connect():
+#     attempts = 2
+#     for i in range(attempts):
+#         try:
+#             connection = pika.BlockingConnection(
+#                 pika.ConnectionParameters(
+#                     host=rabbit_mq_host,
+#                     heartbeat=0,
+#                     blocked_connection_timeout=60,
+#                 )
+#             )
+#             return connection
+#         except pika.exceptions.AMQPConnectionError:
+#             if i < attempts - 1:  # i is zero indexed
+#                 time.sleep(10)  # wait for 10 seconds before trying to reconnect
+#                 continue
+#             else:
+#                 raise
 
 
 class ExecOutput(BaseModel):
@@ -127,24 +128,38 @@ class ExecOutput(BaseModel):
     completed: bool = False
 
 class KernelInfo(BaseModel):
-    kernel_id: str
-    room: str
-    board: str
+    kernel_id: Optional[str] = None
+    # room: str
+    # board: str
     name: str
-    alias: str
-    is_private: bool
-    owner: str
+    # alias: str
+    # is_private: bool
+    # owner: str
 
 outputs: dict[str, ExecOutput] = {}
 kernel_info_collection: dict[str, KernelInfo] = {}
-rabbitmq_connection = rabbitmq_connect()
+# rabbitmq_connection = rabbitmq_connect()
 
-async def check_messages(websocket, rabbitmq_connection):
-    channel = rabbitmq_connection.channel()
-    channel.exchange_declare(exchange='jupyter', exchange_type='topic')
+
+# async def check_messages(websocket, rabbitmq_connection):
+async def check_messages(websocket):
+    # channel = rabbitmq_connection.channel()
+    # channel.exchange_declare(exchange='jupyter', exchange_type='topic')
 
     while True:
-        message = await websocket.recv()
+        print("before receive messge")
+        try:
+            message = await websocket.recv()
+        except Exception as e:
+            print(e)
+
+            # Make sure you send back and error
+            outputs[msg_id] = ExecOutput(session_id=session_id, start_time=start_time, end_time=start_time,
+                                         msg_type='', data=None)
+            outputs[msg_id].completed = True
+
+
+
         message_data = json.loads(message)
         print(message_data)
         if "parent_header" in message_data:
@@ -176,12 +191,12 @@ async def check_messages(websocket, rabbitmq_connection):
 
                 # if content is emtpy that means nothing got published
                 # so go ahead and publish to the wall
-                if outputs[msg_id].content == []:
-                    channel.basic_publish(
-                        exchange='jupyter',
-                        routing_key=session_id,
-                        body=f"Message {msg_id} just completed. {outputs[msg_id].content}"
-                    )
+                # if outputs[msg_id].content == []:
+                #     channel.basic_publish(
+                #         exchange='jupyter',
+                #         routing_key=session_id,
+                #         body=f"Message {msg_id} just completed. {outputs[msg_id].content}"
+                #     )
 
             if message_data["msg_type"] in ["stream", "display_data", "execute_result", "error"]:
                 outputs[msg_id].msg_type = message_data['msg_type']
@@ -214,11 +229,11 @@ async def check_messages(websocket, rabbitmq_connection):
                 outputs[msg_id].last_update_time = message_data['header']['date']
 
                 # print("Publishing now...")
-                channel.basic_publish(
-                    exchange='jupyter',
-                    routing_key=session_id,
-                    body=f"Message {msg_id}  has an ouput. {outputs[msg_id].content}"
-                )
+                # channel.basic_publish(
+                #     exchange='jupyter',
+                #     routing_key=session_id,
+                #     body=f"Message {msg_id}  has an ouput. {outputs[msg_id].content}"
+                # )
 
 
     return outputs
@@ -276,16 +291,15 @@ async def heartbeat():
     return {"status": "ok"}
 
 
-@app.post("/kernels/{kernel_name}")
-async def create_kernel(kernel_name: str, kernel_info: KernelInfo):
+@app.post("/kernels/")
+async def create_kernel(kernel_info: KernelInfo):
+
     if len(kernel_websockets) == max_number_kernels:
-        print("1")
         raise HTTPException(status_code=400,
                             detail=f"Maximum number of kernels reached. Please delete one of the existing kernels.")
 
     url = urljoin(base_url, "/api/kernels")
-    if not kernel_name:
-        print("2")
+    if kernel_info.name is None:
         raise HTTPException(status_code=400, detail="Missing kernel_name")
 
     # Get the XSRF token
@@ -306,15 +320,15 @@ async def create_kernel(kernel_name: str, kernel_info: KernelInfo):
     else:
         raise HTTPException(status_code=500, detail=f"Failed to get kernelspecs {response.text}")
 
-    if kernel_name not in kernel_specs:
+    if kernel_info.name not in kernel_specs:
         raise HTTPException(status_code=400, detail=f"Not a valid kernel_name. Valid values are: {list(kernel_specs.keys())}")
 
-    response = requests.post(url, headers=headers, json={"name": kernel_name})
+    response = requests.post(url, headers=headers, json={"name": kernel_info.name})
 
     if response.status_code != 201:
         raise HTTPException(status_code=500, detail=f"Failed to create kernel {response.text}")
     elif response.status_code == 201:
-        print(f'Successfully created kernel {kernel_name}')
+        print(f'Successfully created kernel {kernel_info.name}')
         kernel_id = response.json()['id']
 
         # set the kernel_id field of the kernel_info object with the kernel_id
@@ -328,8 +342,10 @@ async def create_kernel(kernel_name: str, kernel_info: KernelInfo):
         session_id = str(uuid.uuid4())
         ws_url = urljoin(ws_base_url, f"/api/kernels/{kernel_id}/channels?session_id={session_id}")
 
-        kernel_websockets[kernel_id] = await websockets.connect(ws_url, extra_headers=headers)
-        asyncio.create_task(check_messages(kernel_websockets[kernel_id], rabbitmq_connection))
+        kernel_websockets[kernel_id] = await websockets.connect(ws_url, extra_headers=headers, max_size=5_000_000)
+        # asyncio.create_task(check_messages(kernel_websockets[kernel_id], rabbitmq_connection))
+        asyncio.create_task(check_messages(kernel_websockets[kernel_id]))
+
         response_object = response.json()
         response_object.update({"session_id": session_id})
         return response_object
