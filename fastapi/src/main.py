@@ -38,11 +38,10 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allows all origins
-    allow_credentials=True, # Allows cookies/authorization headers
+    allow_credentials=True,  # Allows cookies/authorization headers
     allow_methods=["*"],  # Allows all methods
     allow_headers=["*"],  # Allows all headers
 )
-
 
 
 parser = argparse.ArgumentParser(description='SageKernelServer')
@@ -59,7 +58,8 @@ parsed_url = urlparse(full_url)
 if not all([parsed_url.scheme, parsed_url.netloc, parsed_url.query]):
     raise ValueError("Invalid URL")
 
-base_url = urlunparse((parsed_url.scheme, parsed_url.netloc, parsed_url.path, '', '', ''))
+base_url = urlunparse(
+    (parsed_url.scheme, parsed_url.netloc, parsed_url.path, '', '', ''))
 # TODO: do this if we're using the RabbitMQ server for communication
 # ws_base_url = None
 # if os.getenv("messaging_type") == "rabbitmq":
@@ -79,8 +79,6 @@ def get_all_kernel_specs():
     return kernel_spec_manager.get_all_specs()
 
 
-
-
 class PartialExecBody(BaseModel):
     session: Union[str, None] = None
     code: str
@@ -94,7 +92,6 @@ class PartialExecBody(BaseModel):
 #     connection = pika.BlockingConnection(
 #         pika.ConnectionParameters(host=rabbit_mq_host, heartbeat=0))
 #     return connection
-
 
 
 # def rabbitmq_connect():
@@ -127,6 +124,7 @@ class ExecOutput(BaseModel):
     execution_count: int = 0
     completed: bool = False
 
+
 class KernelInfo(BaseModel):
     kernel_id: Optional[str] = None
     # room: str
@@ -135,6 +133,7 @@ class KernelInfo(BaseModel):
     # alias: str
     # is_private: bool
     # owner: str
+
 
 outputs: dict[str, ExecOutput] = {}
 kernel_info_collection: dict[str, KernelInfo] = {}
@@ -147,18 +146,35 @@ async def check_messages(websocket):
     # channel.exchange_declare(exchange='jupyter', exchange_type='topic')
 
     while True:
-        print("before receive messge")
+        print("before receive message")
         try:
             message = await websocket.recv()
         except Exception as e:
-            print(e)
-
-            # Make sure you send back and error
-            outputs[msg_id] = ExecOutput(session_id=session_id, start_time=start_time, end_time=start_time,
-                                         msg_type='', data=None)
+            if isinstance(e, websockets.exceptions.ConnectionClosed):
+                print("Connection closed")
+                outputs[msg_id] = ExecOutput(session_id=session_id, start_time=start_time, end_time=None,
+                                             msg_type='error', data={
+                                                 'ename': 'ConnectionClosed',
+                                                 'evalue': 'Connection closed',
+                                                 'traceback': []
+                                             })
+            elif isinstance(e, websockets.exceptions.PayloadTooBig):
+                print("Payload too big")
+                outputs[msg_id] = ExecOutput(session_id=session_id, start_time=start_time, end_time=None,
+                                             msg_type='error', data={
+                                                 'ename': 'PayloadTooBig',
+                                                 'evalue': 'Payload too big',
+                                                 'traceback': []
+                                             })
+            else:
+                print("Exception occurred")
+                outputs[msg_id] = ExecOutput(session_id=session_id, start_time=start_time, end_time=None,
+                                             msg_type='error', data={
+                                                 'ename': 'Exception',
+                                                 'evalue': str(e),
+                                                 'traceback': []
+                                             })
             outputs[msg_id].completed = True
-
-
 
         message_data = json.loads(message)
         print(message_data)
@@ -176,20 +192,19 @@ async def check_messages(websocket):
 
             if outputs[msg_id] == {}:
                 outputs[msg_id] = ExecOutput(session_id=session_id, start_time=start_time, end_time=None,
-                                                     msg_type=None, data='')
+                                             msg_type=None, data='')
 
             if message_data["channel"] == "shell":
                 current_date = datetime.now()
                 outputs[msg_id].end_time = current_date.isoformat() + 'Z'
                 outputs[msg_id].execution_count = message_data["content"]["execution_count"]
 
-
             if "execution_state" in message_data["content"] and \
                     message_data["content"]["execution_state"] == "idle" \
                     and msg_id in outputs:
                 outputs[msg_id].completed = True
 
-                # if content is emtpy that means nothing got published
+                # if content is empty that means nothing got published
                 # so go ahead and publish to the wall
                 # if outputs[msg_id].content == []:
                 #     channel.basic_publish(
@@ -200,7 +215,7 @@ async def check_messages(websocket):
 
             if message_data["msg_type"] in ["stream", "display_data", "execute_result", "error"]:
                 outputs[msg_id].msg_type = message_data['msg_type']
-                ### if stream, then append to existing output if exists
+                # if stream, then append to existing output if exists
                 print("message data is ", message_data)
                 # Extract output and append to existing output
                 output_data = message_data["content"].get("data")
@@ -225,7 +240,8 @@ async def check_messages(websocket):
                         outputs[msg_id].content.append({key: val})
                 elif "traceback" in message_data["content"]:
                     for key in ["traceback", "ename", "evalue"]:
-                        outputs[msg_id].content.append({key:message_data["content"][key]})
+                        outputs[msg_id].content.append(
+                            {key: message_data["content"][key]})
                 outputs[msg_id].last_update_time = message_data['header']['date']
 
                 # print("Publishing now...")
@@ -235,13 +251,15 @@ async def check_messages(websocket):
                 #     body=f"Message {msg_id}  has an ouput. {outputs[msg_id].content}"
                 # )
 
-
     return outputs
+
 
 @app.get("/collection")
 async def get_kernel_info_collection():
-    kernel_info_array = [kernel.dict() for kernel in kernel_info_collection.values()]
+    kernel_info_array = [kernel.dict()
+                         for kernel in kernel_info_collection.values()]
     return kernel_info_array
+
 
 @app.get("/kernels")
 def get_kernels():
@@ -262,8 +280,9 @@ def get_kernels():
     if response.status_code == 201 or response.status_code == 200:
         return response.json()
     else:
-        print (response.status_code)
-        raise HTTPException(status_code=500, detail=f"Failed to get kernels {response.text}")
+        print(response.status_code)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get kernels {response.text}")
 
 
 @app.get("/kernelspecs")
@@ -284,11 +303,16 @@ async def get_kernelspecs():
     if response.status_code != 201:
         return response.json()['kernelspecs']
     else:
-        raise HTTPException(status_code=500, detail=f"Failed to get kernelspecs {response.text}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get kernelspecs {response.text}")
+
 
 @app.get("/heartbeat")
 async def heartbeat():
-    return {"status": "ok"}
+    online_status = True  # Replace with logic to check remote server's status
+    epoch_time = int(time.time())
+    data = json.dumps({'online': online_status, 'epoch': epoch_time})
+    return data
 
 
 @app.post("/kernels/")
@@ -318,7 +342,8 @@ async def create_kernel(kernel_info: KernelInfo):
     if response.status_code != 201:
         kernel_specs = response.json()['kernelspecs']
     else:
-        raise HTTPException(status_code=500, detail=f"Failed to get kernelspecs {response.text}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get kernelspecs {response.text}")
 
     if kernel_info.name not in kernel_specs:
         raise HTTPException(status_code=400, detail=f"Not a valid kernel_name. Valid values are: {list(kernel_specs.keys())}")
@@ -326,7 +351,8 @@ async def create_kernel(kernel_info: KernelInfo):
     response = requests.post(url, headers=headers, json={"name": kernel_info.name})
 
     if response.status_code != 201:
-        raise HTTPException(status_code=500, detail=f"Failed to create kernel {response.text}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to create kernel {response.text}")
     elif response.status_code == 201:
         print(f'Successfully created kernel {kernel_info.name}')
         kernel_id = response.json()['id']
@@ -340,17 +366,21 @@ async def create_kernel(kernel_info: KernelInfo):
         kernel_websockets[kernel_id] = None
         print(kernel_websockets)
         session_id = str(uuid.uuid4())
-        ws_url = urljoin(ws_base_url, f"/api/kernels/{kernel_id}/channels?session_id={session_id}")
+        ws_url = urljoin(
+            ws_base_url, f"/api/kernels/{kernel_id}/channels?session_id={session_id}")
 
         kernel_websockets[kernel_id] = await websockets.connect(ws_url, extra_headers=headers, max_size=5_000_000)
-        # asyncio.create_task(check_messages(kernel_websockets[kernel_id], rabbitmq_connection))
-        asyncio.create_task(check_messages(kernel_websockets[kernel_id]))
+        asyncio.create_task(check_messages(
+            # kernel_websockets[kernel_id], rabbitmq_connection))
+            kernel_websockets[kernel_id]))
 
         response_object = response.json()
         response_object.update({"session_id": session_id})
         return response_object
     else:
-        raise HTTPException(status_code=500, detail=f"Failed to create kernel {response.text}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to create kernel {response.text}")
+
 
 @app.delete("/kernels/{kernel_id}")
 async def delete_kernel(kernel_id: str):
@@ -380,7 +410,8 @@ async def delete_kernel(kernel_id: str):
             print(f"{kernel_id} not found in kernel_websockets.")
         return {"kernel_id": kernel_id, "status": "deleted"}
     else:
-        raise HTTPException(status_code=500, detail=f"Failed to delete kernel {response.text}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to delete kernel {response.text}")
 
 
 @app.post("/execute/{kernel_id}")
@@ -392,21 +423,23 @@ async def execute_code(kernel_id: str, body: PartialExecBody):
     print(kernel_websockets)
 
     if kernel_id not in kernel_websockets:
-        raise HTTPException(status_code=400, detail="Cannot execute code. Kernel not started")
+        raise HTTPException(
+            status_code=400, detail="Cannot execute code. Kernel not started")
 
     session_id = body.session
     if session_id is None:
         session_id = str(uuid.uuid4())
     session_to_kernel[session_id] = kernel_id
 
-    ws_url = urljoin(ws_base_url, f"/api/kernels/{kernel_id}/channels?session_id={session_id}")
+    ws_url = urljoin(
+        ws_base_url, f"/api/kernels/{kernel_id}/channels?session_id={session_id}")
 
     if kernel_websockets[kernel_id] is None or kernel_websockets[kernel_id].closed:
         headers = {'Authorization': f'token {token}'}
         kernel_websockets[kernel_id] = await websockets.connect(ws_url, extra_headers=headers)
 
         # create a task with the sole purpose of keeping the connection alive
-        asyncio.create_task(check_messages(kernel_id, kernel_websockets[kernel_id]))
+        asyncio.create_task(check_messages(kernel_websockets[kernel_id]))
 
         print(f"Connected to kernel {kernel_id}")
 
@@ -439,6 +472,7 @@ async def execute_code(kernel_id: str, body: PartialExecBody):
     outputs[msg_id] = {}
     return {"msg_id": msg_id}
 
+
 @app.post("/stop/{kernel_id}")
 async def stop_kernel(kernel_id: str):
     print(f"Stopping kernel {kernel_id}")
@@ -449,6 +483,8 @@ async def stop_kernel(kernel_id: str):
     del kernel_websockets[kernel_id]
 
 # Restart kernel
+
+
 @app.post("/restart/{kernel_id}")
 async def restart_kernel(kernel_id: str):
     if kernel_id not in kernel_info_collection:
@@ -468,7 +504,8 @@ async def restart_kernel(kernel_id: str):
         print(f"Successfully restarted kernel {kernel_id}")
         return {"status": "ok"}
     else:
-        raise HTTPException(status_code=500, detail=f"Failed to restart kernel {response.text}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to restart kernel {response.text}")
 
 
 @app.get("/status/{msg_id}")
@@ -479,10 +516,12 @@ async def check_status(msg_id: str):
     else:
         if outputs[msg_id] is not None:
             # print(f"Output for {msg_id} is {outputs[msg_id]}")
-            print(f"{msg_id} has output and is of type {type(outputs[msg_id])}")
+            print(
+                f"{msg_id} has output and is of type {type(outputs[msg_id])}")
         else:
             print(f"No output yet for {msg_id}")
     return outputs[msg_id]
+
 
 @app.get("/status/{msg_id}/stream")
 async def check_status_stream(request: Request, msg_id: str):
@@ -498,7 +537,8 @@ async def check_status_stream(request: Request, msg_id: str):
 
         if msg_id not in outputs:
             print("msg_id not found in outputs")
-            raise HTTPException(status_code=500, detail=f"{msg_id} not found in outputs")
+            raise HTTPException(
+                status_code=500, detail=f"{msg_id} not found in outputs")
             # TODO: should we return an empty object here? or return 404?
 
         while True:
@@ -521,7 +561,8 @@ async def check_status_stream(request: Request, msg_id: str):
                     }
                     yield json.dumps(message)
                 else:
-                    data = outputs[msg_id].json()  # should return a JSON string
+                    # should return a JSON string
+                    data = outputs[msg_id].json()
                     message = {
                         "event": "new_message",
                         "id": "message_id",
