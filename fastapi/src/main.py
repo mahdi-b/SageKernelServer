@@ -22,8 +22,7 @@ from sse_starlette.sse import EventSourceResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 
-# rabbit_mq_host = f"amqp://guest:guest@0.0.0.0:5672/?heartbeat=0"
-# rabbit_mq_host = "127.0.0.1"
+# rabbit_mq_host = f"amqp://guest:guest@rabbitmq_server:5672/?heartbeat=0"
 
 max_number_kernels = 3
 output_checking_interval = 0.1
@@ -93,13 +92,14 @@ class PartialExecBody(BaseModel):
 #         pika.ConnectionParameters(host=rabbit_mq_host, heartbeat=0))
 #     return connection
 
+
 # def rabbitmq_connect():
 #     attempts = 2
 #     for i in range(attempts):
 #         try:
 #             connection = pika.BlockingConnection(
 #                 pika.ConnectionParameters(
-#                     host=rabbit_mq_host,
+#                     host='rabbitmq_server',
 #                     heartbeat=0,
 #                     blocked_connection_timeout=60,
 #                 )
@@ -107,10 +107,12 @@ class PartialExecBody(BaseModel):
 #             return connection
 #         except pika.exceptions.AMQPConnectionError:
 #             if i < attempts - 1:  # i is zero indexed
-#                 time.sleep(10)  # wait for 10 seconds before trying to reconnect
+#                 # wait for 10 seconds before trying to reconnect
+#                 time.sleep(10)
 #                 continue
 #             else:
 #                 raise
+
 
 class ExecOutput(BaseModel):
     session_id: str
@@ -125,12 +127,12 @@ class ExecOutput(BaseModel):
 
 class KernelInfo(BaseModel):
     kernel_id: Optional[str] = None
-    # room: str
-    # board: str
+    room: str
+    board: str
     name: str
-    # alias: str
-    # is_private: bool
-    # owner: str
+    alias: str
+    is_private: bool
+    owner: str
 
 
 outputs: dict[str, ExecOutput] = {}
@@ -144,7 +146,6 @@ async def check_messages(websocket):
     # channel.exchange_declare(exchange='jupyter', exchange_type='topic')
 
     while True:
-        print("before receive message")
         try:
             message = await websocket.recv()
         except Exception as e:
@@ -174,8 +175,10 @@ async def check_messages(websocket):
                                              })
             outputs[msg_id].completed = True
 
+            # break
+
         message_data = json.loads(message)
-        print(message_data)
+        # print(message_data)
         if "parent_header" in message_data:
 
             msg_id = message_data["parent_header"]["msg_id"]
@@ -205,11 +208,11 @@ async def check_messages(websocket):
                 # if content is empty that means nothing got published
                 # so go ahead and publish to the wall
                 # if outputs[msg_id].content == []:
-                #     channel.basic_publish(
-                #         exchange='jupyter',
-                #         routing_key=session_id,
-                #         body=f"Message {msg_id} just completed. {outputs[msg_id].content}"
-                #     )
+                # channel.basic_publish(
+                #     exchange='jupyter',
+                #     routing_key=session_id,
+                #     body=f"Message {msg_id} just completed. {outputs[msg_id].content}"
+                # )
 
             if message_data["msg_type"] in ["stream", "display_data", "execute_result", "error"]:
                 outputs[msg_id].msg_type = message_data['msg_type']
@@ -313,15 +316,16 @@ async def heartbeat():
     return data
 
 
-@app.post("/kernels/")
-async def create_kernel(kernel_info: KernelInfo):
-
+@app.post("/kernels/{kernel_name}")
+async def create_kernel(kernel_name: str, kernel_info: KernelInfo):
     if len(kernel_websockets) == max_number_kernels:
+        print("1")
         raise HTTPException(status_code=400,
                             detail=f"Maximum number of kernels reached. Please delete one of the existing kernels.")
 
     url = urljoin(base_url, "/api/kernels")
-    if kernel_info.name is None:
+    if not kernel_name:
+        print("2")
         raise HTTPException(status_code=400, detail="Missing kernel_name")
 
     # Get the XSRF token
@@ -343,16 +347,17 @@ async def create_kernel(kernel_info: KernelInfo):
         raise HTTPException(
             status_code=500, detail=f"Failed to get kernelspecs {response.text}")
 
-    if kernel_info.name not in kernel_specs:
-        raise HTTPException(status_code=400, detail=f"Not a valid kernel_name. Valid values are: {list(kernel_specs.keys())}")
+    if kernel_name not in kernel_specs:
+        raise HTTPException(
+            status_code=400, detail=f"Not a valid kernel_name. Valid values are: {list(kernel_specs.keys())}")
 
-    response = requests.post(url, headers=headers, json={"name": kernel_info.name})
+    response = requests.post(url, headers=headers, json={"name": kernel_name})
 
     if response.status_code != 201:
         raise HTTPException(
             status_code=500, detail=f"Failed to create kernel {response.text}")
     elif response.status_code == 201:
-        print(f'Successfully created kernel {kernel_info.name}')
+        print(f'Successfully created kernel {kernel_name}')
         kernel_id = response.json()['id']
 
         # set the kernel_id field of the kernel_info object with the kernel_id
@@ -367,7 +372,7 @@ async def create_kernel(kernel_info: KernelInfo):
         ws_url = urljoin(
             ws_base_url, f"/api/kernels/{kernel_id}/channels?session_id={session_id}")
 
-        kernel_websockets[kernel_id] = await websockets.connect(ws_url, extra_headers=headers, max_size=5_000_000)
+        kernel_websockets[kernel_id] = await websockets.connect(ws_url, extra_headers=headers, max_size=5*2**20)
         asyncio.create_task(check_messages(
             # kernel_websockets[kernel_id], rabbitmq_connection))
             kernel_websockets[kernel_id]))
@@ -459,7 +464,7 @@ async def execute_code(kernel_id: str, body: PartialExecBody):
             'silent': False,
             'store_history': True,
             'user_expressions': {},
-            'allow_stdin': True,
+            'allow_stdin': False,
             'allow_stdout': True,
             'stop_on_error': True
         },
@@ -535,8 +540,11 @@ async def check_status_stream(request: Request, msg_id: str):
 
         if msg_id not in outputs:
             print("msg_id not found in outputs")
+            # This is causing the client to hang when the msg_id is not found
             raise HTTPException(
                 status_code=500, detail=f"{msg_id} not found in outputs")
+            outputs[msg_id] = {}  # create an empty object for the msg_id??
+
             # TODO: should we return an empty object here? or return 404?
 
         while True:
@@ -601,4 +609,4 @@ async def shutdown_event():
             print(f"Error closing websocket for kernel {kernel_id}")
 
 if __name__ == "__main__":
-    uvicorn.run('main:app', host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run('main:app', host="0.0.0.0", port=81, reload=True)
