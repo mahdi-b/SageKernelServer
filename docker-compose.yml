@@ -1,18 +1,18 @@
 version: '3.8'
 services:
-  rabbitmq_server:
-    image: rabbitmq:3.12-management
-    container_name: rabbitmq_server
-    networks:
-      - sagekernelproxynetwork
-    ports:
-      - '5672:5672'
-      - '15672:15672'
-    healthcheck:
-      test: rabbitmq-diagnostics -q ping
-      interval: 10s
-      timeout: 10s
-      retries: 3
+  # rabbitmq_server:
+  #   image: rabbitmq:3.12-management
+  #   container_name: rabbitmq_server
+  #   networks:
+  #     - sagekernelproxynetwork
+  #   ports:
+  #     - '5672:5672'
+  #     - '15672:15672'
+  #   healthcheck:
+  #     test: rabbitmq-diagnostics -q ping
+  #     interval: 10s
+  #     timeout: 10s
+  #     retries: 3
 
   jupyter_server:
     build: ./jupyter

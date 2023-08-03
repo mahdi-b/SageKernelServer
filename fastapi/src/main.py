@@ -95,8 +95,6 @@ class PartialExecBody(BaseModel):
 #         pika.ConnectionParameters(host=rabbit_mq_host, heartbeat=0))
 #     return connection
 
-
-
 # def rabbitmq_connect():
 #     attempts = 2
 #     for i in range(attempts):
@@ -115,7 +113,6 @@ class PartialExecBody(BaseModel):
 #                 continue
 #             else:
 #                 raise
-
 
 class ExecOutput(BaseModel):
     session_id: str
