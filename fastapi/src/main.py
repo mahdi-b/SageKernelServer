@@ -513,9 +513,11 @@ async def restart_kernel(kernel_id: str):
 
 @app.get("/status/{msg_id}")
 async def check_status(msg_id: str):
+
     # Getting message from users.
     if msg_id not in outputs:
-        raise HTTPException(status_code=400, detail="Invalid msg_id")
+        print("Invalid message id")
+        return {}
     else:
         if outputs[msg_id] is not None:
             # print(f"Output for {msg_id} is {outputs[msg_id]}")
@@ -528,6 +530,7 @@ async def check_status(msg_id: str):
 
 @app.get("/status/{msg_id}/stream")
 async def check_status_stream(request: Request, msg_id: str):
+    print("I am streaming 1")
     headers = {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
@@ -535,21 +538,35 @@ async def check_status_stream(request: Request, msg_id: str):
         'Access-Control-Allow-Origin': '*'
     }
 
+
     async def event_generator():
+
         last_msg_update = None
 
-        if msg_id not in outputs:
-            print("msg_id not found in outputs")
-            # This is causing the client to hang when the msg_id is not found
-            raise HTTPException(
-                status_code=500, detail=f"{msg_id} not found in outputs")
-            outputs[msg_id] = {}  # create an empty object for the msg_id??
-
-            # TODO: should we return an empty object here? or return 404?
+            # # This is causing the client to hang when the msg_id is not found
+            # raise HTTPException(
+            #     status_code=500, detail=f"{msg_id} not found in outputs")
 
         while True:
-
             # if the object is empty then print the message to the stdout and skip it
+            if msg_id not in outputs:
+                print("msg_id not found in outputs --- break")
+                msg = ExecOutput(session_id="None",
+                                 start_time=str(time.time()),
+                                 end_time=str(time.time()),
+                                 msg_type="error",
+                                 content=[{"ename": "KernelNotFound",
+                                           "evalue": "The kernel does not exist"}],
+                                 completed=True)
+                message = {
+                    "event": "new_message",
+                    "id": "message_id",
+                    "data": msg.json()
+
+                }
+                yield message
+                print("breaking")
+                break
 
             if await request.is_disconnected():
                 print("request disconnected")
@@ -560,7 +577,7 @@ async def check_status_stream(request: Request, msg_id: str):
                 # if not isinstance(outputs[msg_id], ExecOutput):
                 if outputs[msg_id] == {}:
                     message = {
-                        "event": "new_message",
+                        "event": "final_message",
                         "id": "message_id",
                         "data": ""
 
@@ -594,7 +611,6 @@ async def check_status_stream(request: Request, msg_id: str):
                 break
 
             await asyncio.sleep(STREAM_DELAY)
-
     return EventSourceResponse(event_generator(), headers=headers)
 
 
@@ -609,4 +625,4 @@ async def shutdown_event():
             print(f"Error closing websocket for kernel {kernel_id}")
 
 if __name__ == "__main__":
-    uvicorn.run('main:app', host="0.0.0.0", port=81, reload=True)
+    uvicorn.run('main:app', host="0.0.0.0", port=8000, reload=True)
