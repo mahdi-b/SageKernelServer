@@ -47,13 +47,32 @@ parser = argparse.ArgumentParser(description='SageKernelServer')
 parser.add_argument('--url', type=str, help='URL to be used in routes')
 args = parser.parse_args()
 
-# Set the URL
+# Get the URL
+url = args.url
 
-full_url = args.url
+# Production or Development
+production = os.getenv("ENVIRONMENT") == "production"
 
+# Get the host
+SAGE3_SERVER = os.getenv("SAGE3_SERVER")
 
-# Validate the URL and the token
-parsed_url = urlparse(full_url)
+# Node JWT Token
+SAGE3_JWT_TOKEN = os.getenv("TOKEN")
+
+node_url = "http://localhost:3333"
+if production:
+    node_url = "https://" + SAGE3_SERVER
+
+# Get the jupyter token from the route /api/configuration
+head = {"Authorization": "Bearer {}".format(SAGE3_JWT_TOKEN)}
+r = requests.get(node_url + "/api/configuration", headers=head)
+token = r.json()["token"]
+
+# Concat the URL and the token
+parsed_url = urlparse(url + "?token=" + token)
+
+print('parsed_url is ', parsed_url)
+
 if not all([parsed_url.scheme, parsed_url.netloc, parsed_url.query]):
     raise ValueError("Invalid URL")
 
@@ -538,14 +557,13 @@ async def check_status_stream(request: Request, msg_id: str):
         'Access-Control-Allow-Origin': '*'
     }
 
-
     async def event_generator():
 
         last_msg_update = None
 
-            # # This is causing the client to hang when the msg_id is not found
-            # raise HTTPException(
-            #     status_code=500, detail=f"{msg_id} not found in outputs")
+        # # This is causing the client to hang when the msg_id is not found
+        # raise HTTPException(
+        #     status_code=500, detail=f"{msg_id} not found in outputs")
 
         while True:
             # if the object is empty then print the message to the stdout and skip it
