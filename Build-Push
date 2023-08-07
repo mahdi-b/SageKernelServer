@@ -18,6 +18,6 @@ fi
 
 # linux
 if [[ $OSTYPE == 'linux'* ]]; then
-  docker buildx build --push -f fastapi/Dockerfile --platform linux/amd64 --tag sage3/fastapi:amd64 ..
+  docker buildx build --push -f fastapi/Dockerfile --platform linux/amd64 --tag sage3/fastapi:amd64 .
 fi
 
