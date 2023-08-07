@@ -55,11 +55,13 @@ production = os.getenv("ENVIRONMENT") == "production"
 
 # Get the host
 SAGE3_SERVER = os.getenv("SAGE3_SERVER")
+if SAGE3_SERVER is None:
+    SAGE3_SERVER = "localhost:3333"
 
 # Node JWT Token
 SAGE3_JWT_TOKEN = os.getenv("TOKEN")
 
-node_url = "http://localhost:3333"
+node_url = "http://" + SAGE3_SERVER
 if production:
     node_url = "https://" + SAGE3_SERVER
 
@@ -283,20 +285,20 @@ async def get_kernel_info_collection():
 
 @app.get("/kernels")
 def get_kernels():
-    # list the kernels created by the user
-    url = urljoin(base_url, "/api/kernels")
     # Get the XSRF token
     session = requests.Session()
     response = session.get(base_url)
     xsrf_token = response.cookies.get('_xsrf')
-
-    print(f"url is {url} and token to use is {token}")
 
     headers = {
         'Authorization': f'token {token}',
         "X-XSRFToken": xsrf_token,
         "Referer": base_url
     }
+
+    kernel_specs_url = urljoin(base_url, "/api/kernels")
+    response = requests.get(kernel_specs_url, headers=headers)
+
     if response.status_code == 201 or response.status_code == 200:
         return response.json()
     else:
