@@ -2,22 +2,11 @@
 
 # macOS
 if [[ $OSTYPE == 'darwin'* ]]; then
-
+  # to push to hub.docker.com
   security -v unlock-keychain ~/Library/Keychains/login.keychain-db
-
-  if [[ `uname -m` == 'arm64' ]]; then
-    docker buildx build --push -f fastapi/Dockerfile --platform linux/arm64 --tag sage3/fastapi:arm64 .
-  fi
-
-  # Intel
-  if [[ `uname -m` == 'x86_64' ]]; then
-    docker buildx build --push -f fastapi/Dockerfile --platform linux/amd64 --tag sage3/fastapi:amd64 .
-  fi
-
 fi
 
-# linux
-if [[ $OSTYPE == 'linux'* ]]; then
-  docker buildx build --push -f fastapi/Dockerfile --platform linux/amd64 --tag sage3/fastapi:amd64 .
-fi
+# Build multi-arch container
+docker buildx build --push -f fastapi/Dockerfile --platform linux/amd64,linux/arm64 --tag sage3/fastapi:latest .
+
 
