@@ -73,8 +73,6 @@ token = r.json()["token"]
 # Concat the URL and the token
 parsed_url = urlparse(url + "?token=" + token)
 
-print('parsed_url is ', parsed_url)
-
 if not all([parsed_url.scheme, parsed_url.netloc, parsed_url.query]):
     raise ValueError("Invalid URL")
 
@@ -238,7 +236,8 @@ async def check_messages(websocket):
             if message_data["msg_type"] in ["stream", "display_data", "execute_result", "error"]:
                 outputs[msg_id].msg_type = message_data['msg_type']
                 # if stream, then append to existing output if exists
-                print("message data is ", message_data)
+                # print("message data is ", message_data)
+                print("Got message")
                 # Extract output and append to existing output
                 output_data = message_data["content"].get("data")
                 if output_data is not None:
@@ -340,13 +339,11 @@ async def heartbeat():
 @app.post("/kernels/{kernel_name}")
 async def create_kernel(kernel_name: str, kernel_info: KernelInfo):
     if len(kernel_websockets) == max_number_kernels:
-        print("1")
         raise HTTPException(status_code=400,
                             detail=f"Maximum number of kernels reached. Please delete one of the existing kernels.")
 
     url = urljoin(base_url, "/api/kernels")
     if not kernel_name:
-        print("2")
         raise HTTPException(status_code=400, detail="Missing kernel_name")
 
     # Get the XSRF token
@@ -388,7 +385,6 @@ async def create_kernel(kernel_name: str, kernel_info: KernelInfo):
         kernel_info_collection[kernel_id] = kernel_info
 
         kernel_websockets[kernel_id] = None
-        print(kernel_websockets)
         session_id = str(uuid.uuid4())
         ws_url = urljoin(
             ws_base_url, f"/api/kernels/{kernel_id}/channels?session_id={session_id}")
@@ -421,7 +417,6 @@ async def delete_kernel(kernel_id: str):
         "X-XSRFToken": xsrf_token,
         "Referer": base_url
     }
-    print(headers)
     url = urljoin(base_url, f"/api/kernels/{kernel_id}")
     response = requests.delete(url, headers=headers)
 
@@ -444,7 +439,7 @@ async def execute_code(kernel_id: str, body: PartialExecBody):
     print(f"About to run Code {body.code} on kernel {kernel_id}")
 
     global kernel_websockets
-    print(kernel_websockets)
+    # print(kernel_websockets)
 
     if kernel_id not in kernel_websockets:
         raise HTTPException(
@@ -468,7 +463,7 @@ async def execute_code(kernel_id: str, body: PartialExecBody):
         print(f"Connected to kernel {kernel_id}")
 
     msg_id = str(uuid.uuid4())
-    print("msg_id = ", msg_id)
+    # print("msg_id = ", msg_id)
 
     message = {
         'header': {
@@ -542,8 +537,7 @@ async def check_status(msg_id: str):
     else:
         if outputs[msg_id] is not None:
             # print(f"Output for {msg_id} is {outputs[msg_id]}")
-            print(
-                f"{msg_id} has output and is of type {type(outputs[msg_id])}")
+            print(f"{msg_id} has output and is of type {type(outputs[msg_id])}")
         else:
             print(f"No output yet for {msg_id}")
     return outputs[msg_id]
@@ -551,7 +545,6 @@ async def check_status(msg_id: str):
 
 @app.get("/status/{msg_id}/stream")
 async def check_status_stream(request: Request, msg_id: str):
-    print("I am streaming 1")
     headers = {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
