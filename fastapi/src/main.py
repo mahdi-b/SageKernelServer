@@ -24,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # rabbit_mq_host = f"amqp://guest:guest@rabbitmq_server:5672/?heartbeat=0"
 
-max_number_kernels = 3
+max_number_kernels = 20
 output_checking_interval = 0.1
 
 STREAM_DELAY = 0.01  # second
