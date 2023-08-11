@@ -12,6 +12,7 @@ from typing import Dict
 from dotenv import load_dotenv
 from datetime import datetime
 
+from typing import List
 from jupyter_client.kernelspec import KernelSpecManager
 from fastapi import FastAPI, WebSocket, HTTPException, Request
 from urllib.parse import urlparse, urlunparse, urljoin
@@ -68,6 +69,7 @@ def get_all_kernel_specs():
 # Storage for outputs and for started kernels.
 outputs: dict[str, ExecOutput] = {}
 kernel_info_collection: dict[str, KernelInfo] = {}
+kernel2msg_id: dict[str, List] = {}
 
 async def check_messages(websocket):
     while True:
@@ -273,7 +275,7 @@ async def create_kernel(kernel_name: str, kernel_info: KernelInfo):
 
     kernel_specs_url = urljoin(base_url, "/api/kernelspecs")
     response = requests.get(kernel_specs_url, headers=headers)
-    if response.status_code != 201:
+    if response.status_code != 201:  # ?????
         kernel_specs = response.json()["kernelspecs"]
     else:
         raise HTTPException(
@@ -320,6 +322,8 @@ async def create_kernel(kernel_name: str, kernel_info: KernelInfo):
 
         response_object = response.json()
         response_object.update({"session_id": session_id})
+
+        kernel2msg_id[kernel_id] = []
         return response_object
     else:
         raise HTTPException(
@@ -342,8 +346,8 @@ async def delete_kernel(kernel_id: str):
         "X-XSRFToken": xsrf_token,
         "Referer": base_url,
     }
-    url = urljoin(base_url, f"/api/kernels/{kernel_id}")
-    response = requests.delete(url, headers=headers)
+    my_url = urljoin(base_url, f"/api/kernels/{kernel_id}")
+    response = requests.delete(my_url, headers=headers)
 
     if response.status_code == 204:
         print(f"Successfully deleted kernel {kernel_id}")
@@ -419,7 +423,40 @@ async def execute_code(kernel_id: str, body: PartialExecBody):
     }
     await kernel_websockets[kernel_id].send(json.dumps(message))
     outputs[msg_id] = {}
+    kernel2msg_id[kernel_id].append(msg_id)
     return {"msg_id": msg_id}
+
+@app.post("/interrupt/{kernel_id}")
+async def interrupt_execution(kernel_id: str):
+    session = requests.Session()
+    response = session.get(base_url)
+    xsrf_token = response.cookies.get("_xsrf")
+
+    headers = {
+        "Authorization": f"token {token}",
+        "X-XSRFToken": xsrf_token,
+        "Referer": base_url,
+    }
+
+    kernel_specs_url = urljoin(base_url, f"/api/kernels/{kernel_id}/interrupt")
+
+    response = requests.post(kernel_specs_url, headers=headers)
+
+    print("Interrupting kernel, returned cocde: ", response.status_code)
+
+    if response.status_code == 201 or response.status_code == 200 or response.status_code == 204:
+        # if len(kernel2msg_id[kernel_id]) > 0:
+        #     msg_id = kernel2msg_id[kernel_id][-1]
+        #     outputs[msg_id].msg_type = "error",
+        #     outputs[msg_id].content = [{"ename": "KernelInterrupted", "evalue": "The kernel was interrupted"}]
+        #     outputs[msg_id].completed = True
+        return {"status": "Idle"}
+    else:
+        print(response.status_code)
+        raise HTTPException(
+            status_code=500, detail=f"Failed to get kernels {response.text}"
+        )
+
 
 
 @app.post("/stop/{kernel_id}")
@@ -433,6 +470,8 @@ async def stop_kernel(kernel_id: str):
 
 
 # Restart kernel
+
+
 
 
 @app.post("/restart/{kernel_id}")
