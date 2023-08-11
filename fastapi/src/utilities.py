@@ -5,12 +5,14 @@ from urllib.parse import urlparse, urlunparse
 
 load_dotenv()
 
+
 def get_sage3_token():
     # Load params exported by Docker
     SAGE3_JWT_TOKEN = os.getenv("TOKEN")
-    production = os.getenv("ENVIRONMENT") == "production"  # Production or Development
+    # Production or Development
+    production = os.getenv("ENVIRONMENT") == "production"
     SAGE3_SERVER = os.getenv("SAGE3_SERVER", "localhost:3333")
-    node_url = ("https://" if production else "https://") + SAGE3_SERVER
+    node_url = ("https://" if production else "http://") + SAGE3_SERVER
 
     # Get the jupyter token from the route /api/configuration
     head = {"Authorization": "Bearer {}".format(SAGE3_JWT_TOKEN)}
@@ -34,7 +36,8 @@ def get_jupyter_token(jupyter_hub_type="LOCAL"):
 
 def build_jupyter_url(url):
     # Build a valid Jupyter URL
-    token = get_jupyter_token(os.getenv('JUPYTER_HUB_TYPE'))  # Get the Jupyter token
+    # Get the Jupyter token
+    token = get_jupyter_token(os.getenv('JUPYTER_HUB_TYPE'))
     # Concat the URL and the token
     parsed_url = urlparse(url + "?token=" + token)
     if not all([parsed_url.scheme, parsed_url.netloc, parsed_url.query]):
