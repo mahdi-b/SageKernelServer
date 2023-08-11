@@ -27,18 +27,18 @@ services:
       timeout: 10s
       retries: 3
 
-  sage_fastapi:
-    build: ./fastapi
-    container_name: sage_fastapi
-    networks:
-      - sagekernelproxynetwork
-    ports:
-      - '81:8000'
-    depends_on:
-  #   rabbitmq_server:
+  # sage_fastapi:
+  #   build: ./fastapi
+  #   container_name: sage_fastapi
+  #   networks:
+  #     - sagekernelproxynetwork
+  #   ports:
+  #     - '81:8000'
+  #   depends_on:
+  # #   rabbitmq_server:
+  # #       condition: service_healthy
+  #     jupyter_server:
   #       condition: service_healthy
-      jupyter_server:
-        condition: service_healthy
 
 networks:
   sagekernelproxynetwork:

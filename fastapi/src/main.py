@@ -1,39 +1,36 @@
+import re
+import os
 import uuid
 import time
-from datetime import datetime
-from dotenv import load_dotenv
 import asyncio
-from jupyter_client.kernelspec import KernelSpecManager
 import uvicorn
 import websockets
-from fastapi import FastAPI, WebSocket, HTTPException, Request
 import requests
 import json
 import argparse
-from urllib.parse import urlparse, urlunparse, urljoin
-import re
-from typing import Optional, List
-import pika
-from typing import Dict, Union
-from pydantic import BaseModel, Field
-import os
+from typing import Dict
+from dotenv import load_dotenv
+from datetime import datetime
 
+from jupyter_client.kernelspec import KernelSpecManager
+from fastapi import FastAPI, WebSocket, HTTPException, Request
+from urllib.parse import urlparse, urlunparse, urljoin
+from pydantic_data_models import PartialExecBody, ExecOutput, KernelInfo
 from sse_starlette.sse import EventSourceResponse
 from fastapi.middleware.cors import CORSMiddleware
+from utilities import build_jupyter_url
+
+# load parameters from .env file
+load_dotenv()
+STREAM_DELAY = float(os.getenv('STREAM_DELAY'))
+MAX_NUMBER_KERNELS = os.getenv('MAX_NUMBER_KERNELS')
+RETRY_TIMEOUT = os.getenv('RETRY_TIMEOUT')
 
 
-# rabbit_mq_host = f"amqp://guest:guest@rabbitmq_server:5672/?heartbeat=0"
 
-max_number_kernels = 20
-output_checking_interval = 0.1
 
-STREAM_DELAY = 0.01  # second
-RETRY_TIMEOUT = 15000  # milisecond
-
+# start FasAPI server and add CORS middleware
 app = FastAPI()
-# origins = [
-#     "*",
-# ]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Allows all origins
@@ -42,46 +39,13 @@ app.add_middleware(
     allow_headers=["*"],  # Allows all headers
 )
 
-
 parser = argparse.ArgumentParser(description="SageKernelServer")
 parser.add_argument("--url", type=str, help="URL to be used in routes")
 args = parser.parse_args()
+url = args.url # Get the Jupyter Server URL
 
-# Get the URL
-url = args.url
 
-# Production or Development
-production = os.getenv("ENVIRONMENT") == "production"
-
-# Get the host
-SAGE3_SERVER = os.getenv("SAGE3_SERVER")
-if SAGE3_SERVER is None:
-    SAGE3_SERVER = "localhost:3333"
-
-# Node JWT Token
-SAGE3_JWT_TOKEN = os.getenv("TOKEN")
-
-node_url = "http://" + SAGE3_SERVER
-if production:
-    node_url = "https://" + SAGE3_SERVER
-
-# Get the jupyter token from the route /api/configuration
-head = {"Authorization": "Bearer {}".format(SAGE3_JWT_TOKEN)}
-r = requests.get(node_url + "/api/configuration", headers=head)
-token = r.json()["token"]
-
-# Concat the URL and the token
-parsed_url = urlparse(url + "?token=" + token)
-
-if not all([parsed_url.scheme, parsed_url.netloc, parsed_url.query]):
-    raise ValueError("Invalid URL")
-
-base_url = urlunparse(
-    (parsed_url.scheme, parsed_url.netloc, parsed_url.path, "", "", "")
-)
-# TODO: do this if we're using the RabbitMQ server for communication
-# ws_base_url = None
-# if os.getenv("messaging_type") == "rabbitmq":
+parsed_url, base_url = build_jupyter_url(url)
 ws_base_url = parsed_url._replace(scheme="ws")
 ws_base_url = urlunparse(ws_base_url)
 
@@ -89,6 +53,9 @@ token = parsed_url.query.split("=")[-1]
 if not re.match(r"^token=\w{4,}$", parsed_url.query):
     raise ValueError("Invalid token")
 
+
+
+# Data structures to store the kernels and the websockets
 kernel_websockets: Dict[str, WebSocket] = {}
 session_to_kernel: Dict[str, str] = {}
 
@@ -98,74 +65,11 @@ def get_all_kernel_specs():
     return kernel_spec_manager.get_all_specs()
 
 
-class PartialExecBody(BaseModel):
-    session: Union[str, None] = None
-    code: str
-
-
-# from pydantic import BaseModel
-# import time
-# import json
-
-# def rabbitmq_connect():
-#     # Connect to RabbitMQ server
-#     connection = pika.BlockingConnection(
-#         pika.ConnectionParameters(host=rabbit_mq_host, heartbeat=0))
-#     return connection
-
-
-# def rabbitmq_connect():
-#     attempts = 2
-#     for i in range(attempts):
-#         try:
-#             connection = pika.BlockingConnection(
-#                 pika.ConnectionParameters(
-#                     host='rabbitmq_server',
-#                     heartbeat=0,
-#                     blocked_connection_timeout=60,
-#                 )
-#             )
-#             return connection
-#         except pika.exceptions.AMQPConnectionError:
-#             if i < attempts - 1:  # i is zero indexed
-#                 # wait for 10 seconds before trying to reconnect
-#                 time.sleep(10)
-#                 continue
-#             else:
-#                 raise
-
-
-class ExecOutput(BaseModel):
-    session_id: str
-    start_time: str
-    end_time: Optional[str]
-    msg_type: Optional[str]
-    content: List[Dict[str, str]] = []
-    last_update_time: Optional[str] = None
-    execution_count: int = 0
-    completed: bool = False
-
-
-class KernelInfo(BaseModel):
-    kernel_id: Optional[str] = None
-    room: str
-    board: str
-    name: str
-    alias: str
-    is_private: bool
-    owner: str
-
-
+# Storage for outputs and for started kernels.
 outputs: dict[str, ExecOutput] = {}
 kernel_info_collection: dict[str, KernelInfo] = {}
-# rabbitmq_connection = rabbitmq_connect()
 
-
-# async def check_messages(websocket, rabbitmq_connection):
 async def check_messages(websocket):
-    # channel = rabbitmq_connection.channel()
-    # channel.exchange_declare(exchange='jupyter', exchange_type='topic')
-
     while True:
         try:
             message = await websocket.recv()
@@ -245,15 +149,6 @@ async def check_messages(websocket):
             ):
                 outputs[msg_id].completed = True
 
-                # if content is empty that means nothing got published
-                # so go ahead and publish to the wall
-                # if outputs[msg_id].content == []:
-                # channel.basic_publish(
-                #     exchange='jupyter',
-                #     routing_key=session_id,
-                #     body=f"Message {msg_id} just completed. {outputs[msg_id].content}"
-                # )
-
             if message_data["msg_type"] in [
                 "stream",
                 "display_data",
@@ -261,10 +156,6 @@ async def check_messages(websocket):
                 "error",
             ]:
                 outputs[msg_id].msg_type = message_data["msg_type"]
-                # if stream, then append to existing output if exists
-                # print("message data is ", message_data)
-                print("Got message: type", message_data["msg_type"])
-                # Extract output and append to existing output
                 output_data = message_data["content"].get("data")
                 if output_data is not None:
                     temp_output = {}
@@ -275,8 +166,6 @@ async def check_messages(websocket):
                 elif "text" in message_data["content"]:
                     key = message_data["content"]["name"]
                     val = message_data["content"]["text"]
-
-                    # outputs[msg_id].content.append({key:outputs[msg_id].content.get(key, '') + val})
                     if (
                         len(outputs[msg_id].content) > 0
                         and message_data["msg_type"] == "stream"
@@ -295,12 +184,6 @@ async def check_messages(websocket):
                         )
                 outputs[msg_id].last_update_time = message_data["header"]["date"]
 
-                # print("Publishing now...")
-                # channel.basic_publish(
-                #     exchange='jupyter',
-                #     routing_key=session_id,
-                #     body=f"Message {msg_id}  has an ouput. {outputs[msg_id].content}"
-                # )
 
     return outputs
 
@@ -313,7 +196,6 @@ async def get_kernel_info_collection():
 
 @app.get("/kernels")
 def get_kernels():
-    # Get the XSRF token
     session = requests.Session()
     response = session.get(base_url)
     xsrf_token = response.cookies.get("_xsrf")
@@ -338,7 +220,6 @@ def get_kernels():
 
 @app.get("/kernelspecs")
 async def get_kernelspecs():
-    # Get the XSRF token
     session = requests.Session()
     response = session.get(base_url)
     xsrf_token = response.cookies.get("_xsrf")
@@ -369,7 +250,7 @@ async def heartbeat():
 
 @app.post("/kernels/{kernel_name}")
 async def create_kernel(kernel_name: str, kernel_info: KernelInfo):
-    if len(kernel_websockets) == max_number_kernels:
+    if len(kernel_websockets) == MAX_NUMBER_KERNELS:
         raise HTTPException(
             status_code=400,
             detail=f"Maximum number of kernels reached. Please delete one of the existing kernels.",
@@ -632,7 +513,6 @@ async def check_status_stream(request: Request, msg_id: str):
                     "data": msg.json(),
                 }
                 yield message
-                print("breaking")
                 break
 
             if await request.is_disconnected():
@@ -676,7 +556,6 @@ async def check_status_stream(request: Request, msg_id: str):
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    print("Cleaning up before shutdown")
     for kernel_id, ws in kernel_websockets.items():
         try:
             if ws is not None and not ws.closed:
@@ -686,4 +565,5 @@ async def shutdown_event():
 
 
 if __name__ == "__main__":
+
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

@@ -3,6 +3,5 @@ websockets
 jupyter_client
 uvicorn
 requests
-pika
 python-dotenv
 sse-starlette
