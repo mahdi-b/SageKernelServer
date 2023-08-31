@@ -36,4 +36,4 @@ jobs:
           context: "{{defaultContext}}:."
           platforms: linux/amd,linux/arm64
           push: true
-          tags: ${{ env.REGISTRY }}/mahdi-b/SageKernelServer:latest
+          tags: ${{ env.REGISTRY }}/mahdi-b/sagekernelserver:latest
