@@ -71,5 +71,5 @@ jobs:
           context: "{{defaultContext}}:."
           platforms: linux/arm64
           push: true
-          tags: ${{ env.REGISTRY }}/mahdi-b/sagekernelserevr:latest
+          tags: ${{ env.REGISTRY }}/mahdi-b/sagekernelserver:arm64
           labels: ${{ steps.meta.outputs.labels }}
