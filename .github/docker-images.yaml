@@ -33,7 +33,7 @@ jobs:
           context: "{{defaultContext}}:."
           platforms: linux/amd64
           push: true
-          tags: ${{ env.REGISTRY }}/sage-3/fastapi:amd64
+          tags: ${{ env.REGISTRY }}/mahdi-b/sagekernelserver:amd64
           labels: ${{ steps.meta.outputs.labels }}
 
   build-and-push-arm:
@@ -64,5 +64,5 @@ jobs:
           context: "{{defaultContext}}:."
           platforms: linux/arm64
           push: true
-          tags: ${{ env.REGISTRY }}/sage-3/fastapi:arm64
+          tags: ${{ env.REGISTRY }}/mahdi-b/sagekernelserver:arm64
           labels: ${{ steps.meta.outputs.labels }}
